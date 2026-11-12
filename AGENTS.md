@@ -1,0 +1,21 @@
+# PayWise Project Guidelines
+
+- Project: PS8 Smart Banking Assistant (PayWise); business user is a bank customer.
+- Stack: Next.js App Router, TypeScript, Tailwind, Supabase (server only, secret key), Gemini function calling, and Zod.
+- Seed tables and main columns:
+  - `customers`: `id`, `name`, `email`, `city`, `kyc_level`.
+  - `accounts`: `id`, `customer_id`, `account_type`, `nickname`, `masked_number`, `balance`, `is_frozen`.
+  - `transfer_limits`: `kyc_level`, `daily_limit`, `per_txn_limit`.
+  - `transactions`: `id`, `account_id`, `txn_date`, `description`, `category`, `direction`, `amount`.
+  - `budgets`: `id`, `customer_id`, `category`, `monthly_limit`, `alert_at_pct`, `created_at`.
+- Agent tools live in `lib/agent/tools.ts`; define each with `defineTool()` and a Zod schema.
+- Tool descriptions must start with “Use this when...”; include limits in each field’s `.describe()` text because Gemini does not see Zod min/max.
+- The logged-in user ID comes from `lib/currentUser.ts` (`CURRENT_USER_ID = "B001"`, Rohan Iyer); never accept a customer ID as a tool argument.
+- Transfers are only between the customer’s own accounts, and the from/to accounts must differ.
+- Frozen accounts cannot send or receive; transfer amount must be above 0; never allow overdrafts.
+- Enforce per-transfer and daily limits from `transfer_limits` using the customer’s `kyc_level`.
+- Execute transfers only via `getSupabase().rpc("transfer_funds", ...)`; never update `accounts` or `transactions` directly.
+- Spending means debit transactions whose category is not `'transfer'`; interpret dates in India time (`Asia/Kolkata`).
+- Allow one budget per customer per category; `alert_at_pct` must be between 10 and 100 and must be validated in TypeScript by the writing tool.
+- Never display full account numbers; use `masked_number`. Never ask for a PIN, OTP, or password.
+- Never use the Supabase secret key in components, and never commit `.env.local`.
