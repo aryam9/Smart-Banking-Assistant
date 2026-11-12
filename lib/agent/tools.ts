@@ -214,4 +214,119 @@ const getBudgetStatus = defineTool({
   },
 });
 
-export const tools: AgentTool[] = [getMyAccounts, getTransactions, getSpendSummary, getBudgetStatus];
+const transferFunds = defineTool({
+  name: "transferFunds",
+  description:
+    "Use this when the customer wants to move money between their own accounts. Needs real account ids, so call getMyAccounts first if you do not know them.",
+  writes: true,
+  schema: z.object({
+    from_account: z.string().describe('Source account ID, for example "A100".'),
+    to_account: z.string().describe('Destination account ID, for example "A101".'),
+    amount: z.number().positive().describe("Transfer amount in rupees; must be more than 0."),
+    note: z
+      .string()
+      .max(100)
+      .optional()
+      .describe("Optional transfer note, at most 100 characters."),
+  }),
+  run: async ({ from_account, to_account, amount, note }) => {
+    const { data, error } = await getSupabase().rpc("transfer_funds", {
+      p_customer_id: CURRENT_USER_ID,
+      p_from_account: from_account,
+      p_to_account: to_account,
+      p_amount: amount,
+      p_note: note ?? null,
+    });
+    if (error) throw new Error(error.message);
+    return data;
+  },
+});
+
+const budgetCategories = [
+  "food",
+  "groceries",
+  "shopping",
+  "travel",
+  "bills",
+  "rent",
+  "entertainment",
+  "health",
+  "education",
+  "other",
+] as const;
+
+const setBudgetAlert = defineTool({
+  name: "setBudgetAlert",
+  description:
+    "Use this when the customer wants to set or change a monthly spending budget or an alert level for a category.",
+  writes: true,
+  schema: z.object({
+    category: z
+      .enum(budgetCategories)
+      .describe(
+        "Budget category: food, groceries, shopping, travel, bills, rent, entertainment, health, education, or other."
+      ),
+    monthly_limit: z
+      .number()
+      .int()
+      .positive()
+      .max(1_000_000)
+      .describe("Monthly budget in whole rupees; more than 0 and at most 1,000,000."),
+    alert_at_pct: z
+      .number()
+      .int()
+      .min(10)
+      .max(100)
+      .default(80)
+      .describe("Alert percentage as a whole number from 10 to 100; defaults to 80."),
+  }),
+  run: async ({ category, monthly_limit, alert_at_pct }) => {
+    if (!Number.isInteger(monthly_limit) || monthly_limit <= 0 || monthly_limit > 1_000_000) {
+      throw new Error("Monthly budget must be a whole number of rupees from 1 to 1,000,000.");
+    }
+    if (!Number.isInteger(alert_at_pct) || alert_at_pct < 10 || alert_at_pct > 100) {
+      throw new Error("Alert level must be a whole-number percentage from 10 to 100.");
+    }
+
+    const supabase = getSupabase();
+    const { data: existing, error: existingError } = await supabase
+      .from("budgets")
+      .select("monthly_limit")
+      .eq("customer_id", CURRENT_USER_ID)
+      .eq("category", category)
+      .maybeSingle();
+    if (existingError) throw new Error(existingError.message);
+
+    const { data, error } = await supabase
+      .from("budgets")
+      .upsert(
+        {
+          customer_id: CURRENT_USER_ID,
+          category,
+          monthly_limit,
+          alert_at_pct,
+        },
+        { onConflict: "customer_id,category" }
+      )
+      .select("category, monthly_limit, alert_at_pct")
+      .single();
+    if (error) throw new Error(error.message);
+
+    return {
+      category: data.category,
+      monthly_limit: Number(data.monthly_limit),
+      alert_at_pct: data.alert_at_pct,
+      action: existing ? "updated" : "created",
+      previous_limit: existing ? Number(existing.monthly_limit) : null,
+    };
+  },
+});
+
+export const tools: AgentTool[] = [
+  getMyAccounts,
+  getTransactions,
+  getSpendSummary,
+  getBudgetStatus,
+  transferFunds,
+  setBudgetAlert,
+];
