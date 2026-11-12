@@ -9,7 +9,7 @@ import { buildSystemPrompt } from "./systemPrompt";
 import type { AgentResult, AgentStep } from "./types";
 
 /** Stops the agent from looping forever and using up your Gemini quota. */
-const MAX_ROUNDS = 5;
+const MAX_ROUNDS = 8;
 
 /**
  * THE AGENT LOOP
@@ -43,7 +43,10 @@ export async function runAgent(messages: ChatMessage[]): Promise<AgentResult> {
 
     // No tool requested: this is the final answer.
     if (calls.length === 0) {
-      return { reply: response.text?.trim() || "Sorry, I could not answer that.", steps };
+      return {
+        reply: response.text?.trim() || "Sorry, I could not answer that.",
+        steps,
+      };
     }
 
     // Keep Gemini's own turn (it carries the tool request) in the history.
@@ -66,7 +69,8 @@ export async function runAgent(messages: ChatMessage[]): Promise<AgentResult> {
   }
 
   return {
-    reply: "I needed too many steps for this request. Please try a simpler or more specific question.",
+    reply:
+      "I needed too many steps for this request. Please try a simpler or more specific question.",
     steps,
   };
 }
@@ -74,21 +78,47 @@ export async function runAgent(messages: ChatMessage[]): Promise<AgentResult> {
 async function runTool(name: string, rawArgs: unknown): Promise<AgentStep> {
   const tool = tools.find((t) => t.name === name);
   if (!tool) {
-    return { tool: name, args: rawArgs, ok: false, writes: false, error: `Unknown tool: ${name}` };
+    return {
+      tool: name,
+      args: rawArgs,
+      ok: false,
+      writes: false,
+      error: `Unknown tool: ${name}`,
+    };
   }
 
   // Never trust the model's arguments: check them with Zod first.
   const parsed = tool.schema.safeParse(rawArgs);
   if (!parsed.success) {
-    const message = parsed.error.issues.map((i) => `${i.path.join(".") || "args"}: ${i.message}`).join("; ");
-    return { tool: name, args: rawArgs, ok: false, writes: tool.writes, error: `Invalid arguments: ${message}` };
+    const message = parsed.error.issues
+      .map((i) => `${i.path.join(".") || "args"}: ${i.message}`)
+      .join("; ");
+    return {
+      tool: name,
+      args: rawArgs,
+      ok: false,
+      writes: tool.writes,
+      error: `Invalid arguments: ${message}`,
+    };
   }
 
   try {
     const result = await tool.run(parsed.data);
-    return { tool: name, args: parsed.data, ok: true, writes: tool.writes, result };
+    return {
+      tool: name,
+      args: parsed.data,
+      ok: true,
+      writes: tool.writes,
+      result,
+    };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Tool failed";
-    return { tool: name, args: parsed.data, ok: false, writes: tool.writes, error: message };
+    return {
+      tool: name,
+      args: parsed.data,
+      ok: false,
+      writes: tool.writes,
+      error: message,
+    };
   }
 }
