@@ -9,9 +9,9 @@ This is the starting point for every team. It already has the setup done, so you
 - A passcode login that protects your app and your Gemini quota
 - A Supabase connection (server side only)
 - A Gemini agent loop with function calling: Gemini picks a tool, Zod checks the arguments, your code runs it, and the result goes back to Gemini
-- 3 example tools on a `tasks` table: `listTasks` (reads), `createTask` (writes) and `completeTask` (writes)
+- PayWise banking tools for viewing accounts, transactions, spending, budgets and transferring between the customer's accounts
 - A chat screen that shows every tool the agent used
-- An example REST API (`/api/tasks`) and a live data list
+- A live banking overview with accounts, budgets and recent transactions
 - Seed data for all 6 problem statements in `seed/`
 
 ## Setup (about 30 minutes)
@@ -32,14 +32,14 @@ To check your settings, open `/api/health`. It shows which variables are missing
 
 ```
 app/
-  page.tsx               Home page: agent chat + data list   <- change
+  page.tsx               Home page: PayWise agent chat + overview
   login/page.tsx         Passcode page
   api/agent/route.ts     POST /api/agent: runs the agent
-  api/tasks/route.ts     Example REST API                    <- copy for your tables
+  api/overview/route.ts  GET /api/overview: live banking data
   api/health/route.ts    Shows which settings are missing
 components/
   AgentChat.tsx          Chat UI that shows tool calls       <- change the sample prompts
-  TaskList.tsx           Example data list                   <- replace with your data
+  Overview.tsx           Live accounts, budgets and transactions
 lib/
   agent/tools.ts         THE AGENT TOOLS                     <- your main work
   agent/systemPrompt.ts  Instructions for Gemini             <- rewrite for your problem

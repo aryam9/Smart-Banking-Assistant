@@ -5,11 +5,11 @@ import type { AgentResult, AgentStep } from "@/lib/agent/types";
 
 type Message = { role: "user" | "model"; text: string; steps?: AgentStep[] };
 
-// YOUR JOB: change these sample prompts to match your problem statement.
 const SAMPLE_PROMPTS = [
-  "Add a task to call the vendor tomorrow, then show all my tasks.",
-  "Which tasks are still open?",
-  "Mark the vendor call task as done.",
+  "How much did I spend on food this month, and am I over my budget?",
+  "Move 20,000 from savings to my salary account.",
+  "Set a 4,000 rupee monthly budget for shopping and alert me at 75%.",
+  "Move Rs 500 from savings to my old savings.",
 ];
 
 export default function AgentChat({ onDataChanged }: { onDataChanged?: () => void }) {
