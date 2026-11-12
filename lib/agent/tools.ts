@@ -1,83 +1,217 @@
 import "server-only";
 import { z } from "zod";
 import { defineTool, type AgentTool } from "./defineTool";
+import { CURRENT_USER_ID } from "../currentUser";
+import { monthRange } from "../dates";
 import { getSupabase } from "../supabase";
 import { isoDate } from "../schemas";
 
-/*
- * EXAMPLE TOOLS for the starter "tasks" table (seed/00_starter_example.sql).
- * They show the pattern: 1 read tool + 2 write tools.
- *
- * YOUR JOB: replace these with tools for your problem statement.
- * Tips:
- *  - Write the description as "Use this when ..." so Gemini knows WHEN to call it.
- *  - Describe every field, including its format (for example YYYY-MM-DD).
- *  - Return small, clean objects. Gemini reads what you return.
- *  - Throw an Error with a clear message when something is wrong. The agent will explain it.
- */
+const transactionCategories = [
+  "food",
+  "groceries",
+  "shopping",
+  "travel",
+  "bills",
+  "rent",
+  "entertainment",
+  "health",
+  "education",
+  "salary",
+  "transfer",
+  "other",
+] as const;
 
-const listTasks = defineTool({
-  name: "listTasks",
+const spendingQuery = async (start: string, end: string) => {
+  const { data, error } = await getSupabase()
+    .from("transactions")
+    .select("category, amount, accounts!inner(customer_id)")
+    .eq("accounts.customer_id", CURRENT_USER_ID)
+    .eq("direction", "debit")
+    .neq("category", "transfer")
+    .gte("txn_date", start)
+    .lt("txn_date", end);
+  if (error) throw new Error(error.message);
+  return data;
+};
+
+const getMyAccounts = defineTool({
+  name: "getMyAccounts",
   description:
-    "Use this when the user wants to see their tasks. Can filter by status. Returns at most 20 tasks, newest first.",
+    "Use this when the user asks to see their accounts or transfer limits. Takes no arguments and returns at most 20 accounts.",
+  schema: z.object({}),
+  run: async () => {
+    const supabase = getSupabase();
+    const [accountsResult, customerResult] = await Promise.all([
+      supabase
+        .from("accounts")
+        .select("id, nickname, account_type, masked_number, balance, is_frozen")
+        .eq("customer_id", CURRENT_USER_ID)
+        .limit(20),
+      supabase.from("customers").select("kyc_level").eq("id", CURRENT_USER_ID).maybeSingle(),
+    ]);
+    if (accountsResult.error) throw new Error(accountsResult.error.message);
+    if (customerResult.error) throw new Error(customerResult.error.message);
+    if (!customerResult.data) throw new Error("Logged-in customer was not found");
+
+    const { data: limits, error: limitsError } = await supabase
+      .from("transfer_limits")
+      .select("per_txn_limit, daily_limit")
+      .eq("kyc_level", customerResult.data.kyc_level)
+      .maybeSingle();
+    if (limitsError) throw new Error(limitsError.message);
+    if (!limits) throw new Error("Transfer limits were not found for this KYC level");
+
+    return {
+      accounts: accountsResult.data,
+      kyc_level: customerResult.data.kyc_level,
+      per_txn_limit: limits.per_txn_limit,
+      daily_limit: limits.daily_limit,
+    };
+  },
+});
+
+const getTransactions = defineTool({
+  name: "getTransactions",
+  description:
+    "Use this when the user asks to view or filter their transactions. Returns at most 20 rows, newest first; to_date is included, and dates use India time.",
   schema: z.object({
-    status: z
-      .enum(["open", "done", "all"])
+    account_id: z.string().optional().describe('Optional account ID, for example "A100".'),
+    category: z
+      .enum(transactionCategories)
       .optional()
-      .describe("Which tasks to return. Default is all."),
+      .describe(
+        "Optional category: food, groceries, shopping, travel, bills, rent, entertainment, health, education, salary, transfer, or other."
+      ),
+    direction: z
+      .enum(["debit", "credit"])
+      .optional()
+      .describe('Optional direction: "debit" or "credit".'),
+    from_date: isoDate.optional().describe("Optional start date in YYYY-MM-DD format, India time."),
+    to_date: isoDate
+      .optional()
+      .describe("Optional end date in YYYY-MM-DD format, India time, included in results."),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(20)
+      .default(10)
+      .describe("Maximum rows to return: a whole number from 1 to 20; defaults to 10."),
   }),
-  run: async ({ status }) => {
+  run: async ({ account_id, category, direction, from_date, to_date, limit }) => {
     let query = getSupabase()
-      .from("tasks")
-      .select("id, title, due_date, status")
-      .order("created_at", { ascending: false })
-      .limit(20);
-    if (status && status !== "all") query = query.eq("status", status);
+      .from("transactions")
+      .select(
+        "id, txn_date, description, category, direction, amount, accounts!inner(customer_id, nickname)"
+      )
+      .eq("accounts.customer_id", CURRENT_USER_ID)
+      .order("txn_date", { ascending: false })
+      .limit(limit);
+    if (account_id) query = query.eq("account_id", account_id);
+    if (category) query = query.eq("category", category);
+    if (direction) query = query.eq("direction", direction);
+    if (from_date) query = query.gte("txn_date", `${from_date}T00:00:00+05:30`);
+    if (to_date) {
+      const [year, month, day] = to_date.split("-").map(Number);
+      const exclusiveEnd = new Date(Date.UTC(year, month - 1, day + 1));
+      const nextDate = `${exclusiveEnd.getUTCFullYear()}-${String(exclusiveEnd.getUTCMonth() + 1).padStart(2, "0")}-${String(exclusiveEnd.getUTCDate()).padStart(2, "0")}T00:00:00+05:30`;
+      query = query.lt("txn_date", nextDate);
+    }
+
     const { data, error } = await query;
     if (error) throw new Error(error.message);
-    return { count: data.length, tasks: data };
+    return {
+      transactions: data.map((transaction) => {
+        const account = Array.isArray(transaction.accounts)
+          ? transaction.accounts[0]
+          : transaction.accounts;
+        if (!account) throw new Error("Transaction account was not found");
+        return {
+          id: transaction.id,
+          txn_date: transaction.txn_date,
+          account_nickname: account.nickname,
+          description: transaction.description,
+          category: transaction.category,
+          direction: transaction.direction,
+          amount: transaction.amount,
+        };
+      }),
+    };
   },
 });
 
-const createTask = defineTool({
-  name: "createTask",
-  description: "Use this when the user asks to add, create or remember a new task.",
-  writes: true,
-  schema: z.object({
-    title: z.string().trim().min(1).max(200).describe("Short title of the task"),
-    due_date: isoDate.optional().describe("Due date in YYYY-MM-DD format, if the user gave one"),
-  }),
-  run: async ({ title, due_date }) => {
-    const { data, error } = await getSupabase()
-      .from("tasks")
-      .insert({ title, due_date: due_date ?? null })
-      .select("id, title, due_date, status")
-      .single();
-    if (error) throw new Error(error.message);
-    return { created: data };
-  },
-});
-
-const completeTask = defineTool({
-  name: "completeTask",
+const getSpendSummary = defineTool({
+  name: "getSpendSummary",
   description:
-    "Use this when the user says a task is finished. Needs the task id, so call listTasks first if you do not know it.",
-  writes: true,
+    "Use this when the user asks for a spending summary. Spending includes debit transactions except transfer category, for this month or last month in India time.",
   schema: z.object({
-    id: z.number().int().positive().describe("The id of the task"),
+    period: z
+      .enum(["this_month", "last_month"])
+      .default("this_month")
+      .describe('Month to summarize: "this_month" or "last_month"; defaults to "this_month".'),
   }),
-  run: async ({ id }) => {
-    const { data, error } = await getSupabase()
-      .from("tasks")
-      .update({ status: "done" })
-      .eq("id", id)
-      .select("id, title, status")
-      .maybeSingle();
-    if (error) throw new Error(error.message);
-    if (!data) throw new Error(`No task found with id ${id}`);
-    return { updated: data };
+  run: async ({ period }) => {
+    const range = monthRange(period === "this_month" ? "this" : "last");
+    const transactions = await spendingQuery(range.start, range.end);
+    const totals = new Map<string, number>();
+    let totalSpent = 0;
+    for (const transaction of transactions) {
+      const amount = Number(transaction.amount);
+      totalSpent += amount;
+      totals.set(transaction.category, (totals.get(transaction.category) ?? 0) + amount);
+    }
+    const categories = [...totals.entries()]
+      .map(([category, total]) => ({ category, total }))
+      .sort((a, b) => b.total - a.total);
+
+    return {
+      period,
+      total_spent: totalSpent,
+      transaction_count: transactions.length,
+      categories,
+    };
   },
 });
 
-/** Every tool in this list is given to Gemini. Add your own tools here. */
-export const tools: AgentTool[] = [listTasks, createTask, completeTask];
+const getBudgetStatus = defineTool({
+  name: "getBudgetStatus",
+  description:
+    "Use this when the user asks how their budgets are doing. Takes no arguments and returns at most 20 budgets with this month's debit spending excluding transfers, in India time.",
+  schema: z.object({}),
+  run: async () => {
+    const { data: budgets, error } = await getSupabase()
+      .from("budgets")
+      .select("category, monthly_limit, alert_at_pct")
+      .eq("customer_id", CURRENT_USER_ID)
+      .limit(20);
+    if (error) throw new Error(error.message);
+
+    const range = monthRange("this");
+    const transactions = await spendingQuery(range.start, range.end);
+    const spendingByCategory = new Map<string, number>();
+    for (const transaction of transactions) {
+      spendingByCategory.set(
+        transaction.category,
+        (spendingByCategory.get(transaction.category) ?? 0) + Number(transaction.amount)
+      );
+    }
+
+    return {
+      budgets: budgets.map((budget) => {
+        const spent = spendingByCategory.get(budget.category) ?? 0;
+        const monthlyLimit = Number(budget.monthly_limit);
+        return {
+          category: budget.category,
+          monthly_limit: monthlyLimit,
+          spent,
+          left: Math.max(0, monthlyLimit - spent),
+          percent_used: Math.round((spent / monthlyLimit) * 100),
+          alert_at_pct: budget.alert_at_pct,
+          alert_reached: spent >= (monthlyLimit * budget.alert_at_pct) / 100,
+        };
+      }),
+    };
+  },
+});
+
+export const tools: AgentTool[] = [getMyAccounts, getTransactions, getSpendSummary, getBudgetStatus];
